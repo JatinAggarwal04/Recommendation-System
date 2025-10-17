@@ -33,49 +33,75 @@ async def lifespan(app: FastAPI):
 
     ml_models["text_model"] = SentenceTransformer('all-MiniLM-L6-v2')
     
-    # --- LLM Chains ---
+    # --- 1. Enhanced Intent Detection Chain ---
     intent_template = """
     Analyze the user's latest message in the context of the chat history and the last shown products. Classify the intent into ONE of the following categories:
     GREETING, SEARCH, REFINEMENT, FOLLOWUP, QUESTION.
+
     - GREETING: The user is saying hello, thanks, or making simple conversation.
-    - SEARCH: The user is starting a NEW search for a product.
-    - REFINEMENT: The user wants to MODIFY the previous search (e.g., "cheaper," "in blue").
-    - FOLLOWUP: The user is asking a general question about one of the products just shown (e.g., "tell me more about the first one").
-    - QUESTION: The user is asking a SPECIFIC question about one of the products shown (e.g., "what is the second one made of?").
+    - SEARCH: The user is starting a NEW search for a product. This is for queries that are not related to the previous search.
+    - REFINEMENT: The user wants to MODIFY the previous search (e.g., "cheaper," "in blue," "a smaller one").
+    - FOLLOWUP: The user is asking a general question about one of the products just shown (e.g., "tell me more about the first one," "which is best?").
+    - QUESTION: The user is asking a SPECIFIC question about one of the products shown (e.g., "what is the second one made of?", "what are the dimensions of the last one?").
+    
     Respond with ONLY the category name.
-    <Chat History>{chat_history}</Chat History>
-    <Last Products Shown>{last_products}</Last Products Shown>
+
+    <Chat History>
+    {chat_history}
+    </Chat History>
+
+    <Last Products Shown>
+    {last_products}
+    </Last Products Shown>
+
     User Message: "{user_message}"
-    Intent:"""
+    Intent:
+    """
     intent_prompt = ChatPromptTemplate.from_template(intent_template)
     ml_models["intent_chain"] = intent_prompt | fast_llm | StrOutputParser()
 
+    # --- 2. Query Refinement Chain ---
     refinement_template = """
-    You are a search query assistant. Refine a previous search query based on the user's new request.
+    You are a search query assistant. Your task is to refine a previous search query based on the user's new request.
     Combine the previous query with the user's refinement to create a new, complete search query.
+
     Previous Search Query: "{previous_query}"
     User's Refinement: "{user_message}"
-    New Search Query:"""
+    New Search Query:
+    """
     refinement_prompt = ChatPromptTemplate.from_template(refinement_template)
     ml_models["refinement_chain"] = refinement_prompt | fast_llm | StrOutputParser()
     
+    # --- 3. Product Q&A Chain ---
     qa_template = """
     You are a helpful furniture expert. Answer the user's question based ONLY on the provided product information.
-    If the information is not available, say "I'm sorry, I don't have that information."
-    Identify which product the user is asking about.
-    <Product Information>{product_context}</Product Information>
+    If the information is not available in the provided text, say "I'm sorry, I don't have that information."
+    Identify which product the user is asking about (e.g., "the first one," "the second option").
+
+    <Product Information>
+    {product_context}
+    </Product Information>
+
     User's Question: "{user_message}"
-    Answer:"""
+    Answer:
+    """
     qa_prompt = ChatPromptTemplate.from_template(qa_template)
     ml_models["qa_chain"] = qa_prompt | fast_llm | StrOutputParser()
 
+    # --- 4. Creative Description Chain ---
     desc_template = """
-    You are an expert e-commerce copywriter. Write a single, compelling, and creative descriptive paragraph based on the product data.
+    You are an expert e-commerce copywriter. Based on the product data, write a single, compelling, and creative descriptive paragraph.
     The output MUST be a single paragraph of text only. NO markdown, titles, or bullet points.
-    Product Data: - Title: {title} - Description: {description}
-    Creative Paragraph:"""
+    
+    Product Data:
+    - Title: {title}
+    - Description: {description}
+    
+    Creative Paragraph:
+    """
     desc_prompt = ChatPromptTemplate.from_template(desc_template)
     ml_models["desc_chain"] = desc_prompt | creative_llm | StrOutputParser()
+
 
     print("Models loaded successfully.")
     yield
@@ -97,7 +123,8 @@ class Product(BaseModel):
     id: str
     title: str
     generated_description: str
-    
+    price: Optional[str] = None # Added price field
+
 class ConversationalQuery(BaseModel):
     query: str
     history: List[ChatMessage]
@@ -115,10 +142,15 @@ def get_last_search_query(history: List[ChatMessage]) -> str:
     return ""
 
 def format_product_context(products: List[Product]) -> str:
-    if not products: return "No products are currently being displayed."
+    if not products:
+        return "No products are currently being displayed."
+    
     context_str = ""
     for i, p in enumerate(products):
-        context_str += f"Product {i+1} (ID: {p.id}):\n  Title: {p.title}\n  Description: {p.generated_description}\n\n"
+        context_str += f"Product {i+1} (ID: {p.id}):\n"
+        context_str += f"  Title: {p.title}\n"
+        context_str += f"  Price: {p.price}\n" # Added price to context
+        context_str += f"  Description: {p.generated_description}\n\n"
     return context_str
 
 # --- Main API Endpoint ---
@@ -128,7 +160,9 @@ def recommend_products(query: ConversationalQuery):
     last_products_str = format_product_context(query.last_products)
 
     intent = ml_models["intent_chain"].invoke({
-        "chat_history": chat_history_str, "last_products": last_products_str, "user_message": query.query
+        "chat_history": chat_history_str,
+        "last_products": last_products_str,
+        "user_message": query.query
     })
     print(f"Detected Intent: {intent}")
 
@@ -137,7 +171,8 @@ def recommend_products(query: ConversationalQuery):
 
     elif "FOLLOWUP" in intent or "QUESTION" in intent:
         answer = ml_models["qa_chain"].invoke({
-            "product_context": last_products_str, "user_message": query.query
+            "product_context": last_products_str,
+            "user_message": query.query
         })
         return {"type": "answer", "response": answer}
 
@@ -146,7 +181,8 @@ def recommend_products(query: ConversationalQuery):
         if "REFINEMENT" in intent:
             previous_query = get_last_search_query(query.history)
             search_query = ml_models["refinement_chain"].invoke({
-                "previous_query": previous_query, "user_message": query.query
+                "previous_query": previous_query,
+                "user_message": query.query
             })
             print(f"Refined Search Query: {search_query}")
 
@@ -159,74 +195,69 @@ def recommend_products(query: ConversationalQuery):
             metadata = match['metadata']
             try:
                 creative_desc = ml_models["desc_chain"].invoke({
-                    "title": metadata['title'], "description": metadata.get('description', '')
+                    "title": metadata['title'], 
+                    "description": metadata.get('description', '')
                 })
             except Exception as e:
                 print(f"Error generating description: {e}")
                 creative_desc = metadata.get('description', 'A beautiful piece of furniture.')
 
             recommendations.append({
-                "id": match['id'], "title": metadata['title'], "image": metadata.get('image'),
-                "score": match['score'], "generated_description": creative_desc.strip()
+                "id": match['id'],
+                "title": metadata['title'],
+                "image": metadata.get('image'),
+                "score": match['score'],
+                "generated_description": creative_desc.strip(),
+                "price": metadata.get('price', 'N/A') # Fetch price from metadata
             })
         return {"type": "products", "recommendations": recommendations}
 
-# --- Analytics Endpoint ---
 @app.get("/analytics")
 def get_analytics():
-    """
-    Provides analytics on the dataset stored in Pinecone.
-    NOTE: This fetches a large chunk of data and processes it in memory.
-    This approach is suitable for small-to-medium datasets but is not recommended
-    for very large-scale production systems, where a dedicated analytics DB would be better.
-    """
     try:
-        # Get total vector count
         stats = index.describe_index_stats()
         total_vectors = stats.get('total_vector_count', 0)
+        # Fetch a large sample of vectors to perform analytics
+        # Pinecone's free tier allows querying up to 1000 vectors
+        if total_vectors > 0:
+            fetch_response = index.query(vector=[0.0] * 1152, top_k=min(total_vectors, 1000), include_metadata=True)
+            df = pd.DataFrame([match['metadata'] for match in fetch_response['matches']])
+        else:
+            df = pd.DataFrame()
 
-        # To get metadata, we can query for a neutral vector and fetch top_k items.
-        # This gives us a large sample of the data. We fetch up to 1000 items.
-        # Pinecone's max top_k can be higher, but 1000 is a safe limit for this operation.
-        query_vector = [0.0] * 1152
-        fetch_response = index.query(vector=query_vector, top_k=min(total_vectors, 1000), include_metadata=True)
-        
-        metadata_list = [match['metadata'] for match in fetch_response['matches']]
-        
-        # Use pandas to analyze the metadata
-        df = pd.DataFrame(metadata_list)
-
-        # 1. Top Brands
-        top_brands = df['brand'].value_counts().nlargest(10).reset_index()
-        top_brands.columns = ['name', 'count']
-        
-        # 2. Top Categories
-        # The 'categories' field is a string representation of a list, e.g., "['Cat1', 'Cat2']"
-        # We need to parse it and count each category individually.
-        all_categories = []
-        for cat_str in df['categories'].dropna():
-            try:
-                # Safely evaluate the string to a list
-                cat_list = ast.literal_eval(cat_str)
-                if isinstance(cat_list, list):
-                    all_categories.extend(cat_list)
-            except (ValueError, SyntaxError):
-                # Handle cases where the string is not a valid list
-                pass
-        
-        category_counts = Counter(all_categories)
-        top_categories = [{"name": cat, "count": count} for cat, count in category_counts.most_common(10)]
-
-        return {
-            "total_products": total_vectors,
-            "top_brands": top_brands.to_dict('records'),
-            "top_categories": top_categories
-        }
-
+        # Calculate analytics only if dataframe is not empty
+        if not df.empty:
+            top_brands = df['brand'].value_counts().nlargest(10).reset_index()
+            top_brands.columns = ['name', 'count']
+            
+            all_categories = []
+            # Safely parse categories
+            for cat_str in df['categories'].dropna():
+                try:
+                    # ast.literal_eval is safer than eval
+                    cats = ast.literal_eval(cat_str)
+                    if isinstance(cats, list):
+                        all_categories.extend(cats)
+                except (ValueError, SyntaxError):
+                    # Handle cases where the string is not a valid list literal
+                    pass
+            category_counts = Counter(all_categories)
+            top_categories = [{"name": cat, "count": count} for cat, count in category_counts.most_common(10)]
+            
+            return {
+                "total_products": total_vectors,
+                "top_brands": top_brands.to_dict('records'),
+                "top_categories": top_categories
+            }
     except Exception as e:
-        print(f"Error fetching analytics data: {e}")
-        return {"error": "Could not retrieve analytics data."}
-
+        print(f"Error fetching analytics: {e}")
+    
+    # Fallback response
+    return {
+        "total_products": 0,
+        "top_brands": [],
+        "top_categories": []
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
