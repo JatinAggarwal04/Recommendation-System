@@ -8,6 +8,7 @@ const ChatPage = () => {
     const [lastShownProducts, setLastShownProducts] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [lightboxImage, setLightboxImage] = useState(null);
     const messagesEndRef = useRef(null);
 
     const scrollToBottom = () => {
@@ -16,47 +17,117 @@ const ChatPage = () => {
 
     useEffect(scrollToBottom, [messages]);
 
+    // Close lightbox on Escape key
+    useEffect(() => {
+        const handleEscape = (e) => {
+            if (e.key === 'Escape' && lightboxImage) {
+                setLightboxImage(null);
+            }
+        };
+        window.addEventListener('keydown', handleEscape);
+        return () => window.removeEventListener('keydown', handleEscape);
+    }, [lightboxImage]);
+
+    const openLightbox = (imageUrl, productTitle) => {
+        setLightboxImage({ url: imageUrl, title: productTitle });
+    };
+
+    const closeLightbox = () => {
+        setLightboxImage(null);
+    };
+
     const sendMessage = async (e) => {
         e.preventDefault();
         if (!input.trim() || isLoading) return;
 
         const userMessage = { from: 'user', text: input };
-        const currentMessages = [...messages, userMessage];
-        
-        setMessages(currentMessages);
+        const currentMessagesForState = [...messages, userMessage];
+
+        // Prepare the history for the API, ensuring the backend gets the right format
+        const historyForAPI = messages.map(m => ({ from_user: m.from, text: m.text }));
+
+        setMessages(currentMessagesForState);
         setInput('');
         setIsLoading(true);
 
-        const apiHistory = currentMessages.map(msg => ({
-            from_user: msg.from,
-            text: msg.text
-        }));
-        
-        const apiPayload = {
-            query: input,
-            history: apiHistory,
-            last_products: lastShownProducts.map(p => ({ id: p.id, title: p.title, generated_description: p.generated_description }))
-        };
-
         try {
-            const response = await axios.post('http://127.0.0.1:8000/recommend', apiPayload);
+            const response = await axios.post('http://127.0.0.1:8000/recommend', {
+                query: input,
+                history: [...historyForAPI, { from_user: 'user', text: input }],
+                last_products: lastShownProducts.map(p => ({
+                    id: p.id,
+                    title: p.title,
+                    image: p.image,
+                    price: p.price,
+                    key_features: p.key_features,
+                    best_for: p.best_for,
+                    dimensions: p.dimensions,
+                    material: p.material,
+                    color: p.color,
+                    brand: p.brand
+                }))
+            });
+
             const data = response.data;
+            
+            // Log the response for debugging
+            console.log('Backend response:', data);
+            
             let botMessage;
 
-            if (data.type === 'greeting' || data.type === 'answer') {
+            // Handle greeting response
+            if (data.type === 'greeting') {
                 botMessage = { from: 'bot', text: data.response };
-                if (data.type === 'greeting') setLastShownProducts([]);
-            } else if (data.type === 'products' && data.recommendations?.length > 0) {
-                botMessage = { from: 'bot', text: "Here's what I found based on your request:", products: data.recommendations };
-                setLastShownProducts(data.recommendations); 
-            } else {
-                botMessage = { from: 'bot', text: "I couldn't find any specific matches. Could you try describing it differently?" };
+                setLastShownProducts([]); // Reset products on greeting
+            } 
+            // Handle answer/question response
+            else if (data.type === 'answer') {
+                botMessage = { from: 'bot', text: data.response };
+                // Don't reset products for answers/questions
+            } 
+            // Handle no results found
+            else if (data.type === 'no_results') {
+                botMessage = { from: 'bot', text: data.response };
+                setLastShownProducts([]); // Clear products when no results
+            }
+            // Handle product recommendations
+            else if (data.type === 'products' && data.recommendations?.length > 0) {
+                // Use custom response message if provided, otherwise use default
+                const responseText = data.response || "Here are some recommendations based on your request:";
+                botMessage = { 
+                    from: 'bot', 
+                    text: responseText, 
+                    products: data.recommendations 
+                };
+                setLastShownProducts(data.recommendations);
+            } 
+            // Fallback for unexpected responses
+            else {
+                console.error('Unexpected response format:', data);
+                botMessage = { from: 'bot', text: "I'm sorry, I couldn't find any products that match your search. Please try describing it differently." };
                 setLastShownProducts([]);
             }
+            
             setMessages(prev => [...prev, botMessage]);
+
         } catch (error) {
             console.error("Error fetching recommendations:", error);
-            const errorMessage = { from: 'bot', text: 'Sorry, I seem to be having trouble connecting. Please try again.' };
+            console.error("Error details:", error.response?.data);
+            
+            let errorText = 'Sorry, I seem to be having trouble connecting.';
+            
+            if (error.response) {
+                // Server responded with error
+                errorText = `Server error: ${error.response.status}. ${error.response.data?.detail || 'Please try again.'}`;
+            } else if (error.request) {
+                // Request made but no response
+                errorText = 'No response from server. Please check if the backend is running.';
+            } else {
+                // Something else happened
+                errorText = `Error: ${error.message}`;
+            }
+            
+            const errorMessage = { from: 'bot', text: errorText };
             setMessages(prev => [...prev, errorMessage]);
         } finally {
             setIsLoading(false);
@@ -74,15 +145,55 @@ const ChatPage = () => {
                                 <div className="product-list">
                                     {msg.products.map(p => (
                                         <div key={p.id} className="product-card">
-                                            <img 
-                                                src={p.image} 
-                                                alt={p.title} 
-                                                className="product-image"
-                                                onError={(e) => { e.target.onerror = null; e.target.src='https://placehold.co/100x100/EEE/31343C?text=N/A'; }} 
+                                            <img
+                                                src={p.image || 'https://placehold.co/100x100/EEE/31343C?text=No+Image'}
+                                                alt={p.title}
+                                                className="product-image clickable"
+                                                onClick={() => {
+                                                    const imageUrl = p.image || 'https://placehold.co/100x100/EEE/31343C?text=No+Image';
+                                                    openLightbox(imageUrl, p.title);
+                                                }}
+                                                onError={(e) => { e.target.onerror = null; e.target.src='https://placehold.co/100x100/EEE/31343C?text=No+Image'; }}
                                             />
                                             <div className="product-info">
                                                 <h3>{p.title}</h3>
-                                                <p>{p.generated_description}</p>
+                                                <p className="product-price">{p.price}</p>
+                                                <div className="product-summary">
+                                                    <h4>Key Features:</h4>
+                                                    <ul>
+                                                        {p.key_features && p.key_features.map((feature, i) => <li key={i}>{feature}</li>)}
+                                                    </ul>
+                                                    <h4>Best For:</h4>
+                                                    <p>{p.best_for}</p>
+                                                    
+                                                    {/* Display additional metadata with clear labels */}
+                                                    <div className="product-details">
+                                                        {p.dimensions && (
+                                                            <div className="detail-row">
+                                                                <span className="detail-label">Dimensions:</span>
+                                                                <span className="detail-value">{p.dimensions}</span>
+                                                            </div>
+                                                        )}
+                                                        {p.material && (
+                                                            <div className="detail-row">
+                                                                <span className="detail-label">Material:</span>
+                                                                <span className="detail-value">{p.material}</span>
+                                                            </div>
+                                                        )}
+                                                        {p.color && (
+                                                            <div className="detail-row">
+                                                                <span className="detail-label">Color:</span>
+                                                                <span className="detail-value">{p.color}</span>
+                                                            </div>
+                                                        )}
+                                                        {p.brand && (
+                                                            <div className="detail-row">
+                                                                <span className="detail-label">Brand:</span>
+                                                                <span className="detail-value">{p.brand}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                     ))}
@@ -102,6 +213,26 @@ const ChatPage = () => {
                 )}
                 <div ref={messagesEndRef} />
             </div>
+
+            {/* Lightbox Modal */}
+            {lightboxImage && (
+                <div className="lightbox-overlay" onClick={closeLightbox}>
+                    <div className="lightbox-container" onClick={(e) => e.stopPropagation()}>
+                        <button className="lightbox-close" onClick={closeLightbox} aria-label="Close">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M18 6L6 18M6 6l12 12" />
+                            </svg>
+                        </button>
+                        <img 
+                            src={lightboxImage.url} 
+                            alt={lightboxImage.title}
+                            className="lightbox-image"
+                        />
+                        <div className="lightbox-caption">{lightboxImage.title}</div>
+                    </div>
+                </div>
+            )}
+
             <form className="chat-input-form" onSubmit={sendMessage}>
                 <input
                     type="text"
@@ -111,7 +242,7 @@ const ChatPage = () => {
                     disabled={isLoading}
                 />
                 <button type="submit" disabled={isLoading}>
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="send-icon">
+                    <svg className="send-icon" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
                     </svg>
                 </button>
@@ -121,4 +252,3 @@ const ChatPage = () => {
 };
 
 export default ChatPage;
-
