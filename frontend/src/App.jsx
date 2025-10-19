@@ -15,7 +15,7 @@ const App = () => {
                 <div className="app-container">
                     <div className="chat-widget">
                         <header className="chat-header">
-                            <h1>FurniFind AI</h1>
+                            <h1>AI Product Recommendation System</h1>
                             <nav>
                                 <NavLink to="/" className={({ isActive }) => isActive ? 'active' : ''}>Chat</NavLink>
                                 <NavLink to="/analytics" className={({ isActive }) => isActive ? 'active' : ''}>Analytics</NavLink>

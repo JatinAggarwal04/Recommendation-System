@@ -1,6 +1,6 @@
 # Recommendation System
 
-# FurniFind — Recommendation System
+# AI Recommendation System
 
 A small end-to-end furniture recommendation project:
 - Backend API (FastAPI + Pinecone + SentenceTransformers + Groq LLM chains): [backend/app/main.py](backend/app/main.py) — see functions [`app.recommend_products`](backend/app/main.py), [`app.get_analytics`](backend/app/main.py) and lifecycle [`lifespan`](backend/app/main.py).
