@@ -801,8 +801,14 @@ def get_analytics():
         "least_expensive": None,
         "category_metrics": []
     }
+
+SECRET_TOKEN = os.getenv("PING_SECRET")
+
 @app.get("/ping")
-def ping():
+async def ping(request: Request):
+    token = request.query_params.get("token")
+    if token != SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
     return {"status": "alive"}
 
 if __name__ == "__main__":
