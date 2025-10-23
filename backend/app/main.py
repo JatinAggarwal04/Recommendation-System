@@ -801,6 +801,9 @@ def get_analytics():
         "least_expensive": None,
         "category_metrics": []
     }
+@app.get("/ping")
+def ping():
+    return {"status": "alive"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
